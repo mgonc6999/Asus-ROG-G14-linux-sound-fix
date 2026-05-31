@@ -2,10 +2,9 @@
 
 > **Fork of [Emile86/Asus-ROG-G14-linux-sound-fix](https://github.com/Emile86/Asus-ROG-G14-linux-sound-fix)**  
 > This fork applies bug fixes, broader distro support, and Fedora 44 / KDE compatibility on top of the original v1.4 script.
->
-> The code was generated with Claude Sonnet 4.6
-> Use at your own risk
-> 
+
+> ⚠️ Code generated with Claude Sonnet 4.6 — use at your own risk.
+
 ---
 
 ## ❗ Problems this script fixes
@@ -90,21 +89,6 @@ Follow the on-screen menu:
 
 ---
 
-## ⚠️ Fedora / SELinux note
-
-Fedora ships with SELinux in enforcing mode. If the volume fix does not persist after reboot, the `amixer` service call may be silently blocked. The script will warn you after install. To create a local SELinux policy allowing it:
-
-```bash
-sudo ausearch -c amixer --raw | audit2allow -M zephyrus-sound
-sudo semodule -X 300 -i zephyrus-sound.pp
-```
-
-Or temporarily set SELinux to permissive to test:
-
-```bash
-sudo setenforce 0
-```
-
 ---
 
 ## 🔧 How it works
@@ -132,7 +116,14 @@ Written to `/etc/systemd/system/alsa-card-volume-cap.service`. Runs once at boot
 
 ---
 
-## 📋 Changes from upstream v1.4
+## 📋 Changelog
+
+### v1.5.1
+- Fixed systemd ordering cycle: `After=graphical.target` + `WantedBy=multi-user.target` caused a circular dependency on Fedora, preventing the service from running at boot. Changed to `After=multi-user.target`.
+- Confirmed working on Fedora 44 KDE after cold boot.
+- Removed SELinux warning and `check_selinux()` function: SELinux does not block `amixer` in this setup (confirmed via `ausearch`); the ordering cycle was the actual cause of boot failures.
+
+### v1.5 (changes from upstream v1.4)
 
 | # | Area | Change |
 |---|------|--------|
@@ -141,13 +132,12 @@ Written to `/etc/systemd/system/alsa-card-volume-cap.service`. Runs once at boot
 | 3 | WirePlumber config dir | Changed to `main.conf.d` (correct path for WirePlumber 0.5+) |
 | 4 | WirePlumber property | Fixed `api.alsa.soft-mixer` → `api.alsa.use-software-mixer` |
 | 5 | systemd service | Fixed `After=` (removed non-existent system-level pipewire dep); added `RemainAfterExit=yes`; moved sleep to `ExecStartPre` |
-| 6 | SELinux | Added `check_selinux()` warning on Fedora and other SELinux systems; added SELinux status to diagnostics export |
 | 7 | Card detection | Safer `awk` card index parsing with `+0` and `sort -un` |
 | 8 | Repair | Fixed card ID extraction from service file to parse `-c` flag correctly |
 | 9 | Script path | Fixed `BASH_SOURCE[0]` fallback for piped/sourced execution |
 | 10 | Fallback menu | Added missing `*` default case for invalid input |
 | 11 | Typo | Fixed "Insrease" in MODEL_INFO |
-| 12 | Version | Bumped to 1.5 |
+| 12 | Version | Bumped to 1.5.1 |
 
 ---
 
