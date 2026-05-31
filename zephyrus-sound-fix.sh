@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 APP_NAME="ASUS ROG Zephyrus Sound Fix"
-VERSION="1.5"
+VERSION="1.5.1"
 
 MODEL_INFO="Designed for ASUS ROG Zephyrus G14/G16 2024/2025
 
@@ -146,12 +146,12 @@ monitor.alsa.rules = [
 EOF
 
     # Note: pipewire.service and wireplumber.service are user-session services and
-    # cannot be referenced in After= from a system service. graphical.target is used
+    # cannot be referenced in After= from a system service. multi-user.target avoids
     # instead. ExecStartPre sleep gives the user session time to initialize ALSA.
     sudo tee "$SERVICE_PATH" >/dev/null <<EOF
 [Unit]
 Description=Set max volume on ALSA card $card
-After=graphical.target
+After=multi-user.target
 
 [Service]
 Type=oneshot
@@ -170,21 +170,6 @@ EOF
     sudo systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
 }
 
-# Warn Fedora (and other SELinux) users that amixer run from a system service
-# may be silently blocked by SELinux in enforcing mode.
-check_selinux() {
-    if command -v getenforce >/dev/null && [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
-        if command -v whiptail >/dev/null; then
-            whiptail --title "SELinux Notice" --msgbox \
-"SELinux is Enforcing on this system.\n\nIf the volume fix does not persist after reboot, run:\n\n  sudo ausearch -c amixer --raw | audit2allow -M zephyrus-sound\n  sudo semodule -X 300 -i zephyrus-sound.pp\n\nOr temporarily set SELinux to permissive:\n  sudo setenforce 0" \
-18 70
-        else
-            echo "⚠ SELinux is Enforcing. If volume resets after reboot, run:"
-            echo "  sudo ausearch -c amixer --raw | audit2allow -M zephyrus-sound"
-            echo "  sudo semodule -X 300 -i zephyrus-sound.pp"
-        fi
-    fi
-}
 
 show_progress() {
     local title="$1"
@@ -254,7 +239,6 @@ install_fix() {
     create_configs "$CARD_ID"
     log "Installed on card $CARD_ID"
 
-    check_selinux
 
     whiptail --msgbox "✅ Installation complete." 8 60
     prompt_reboot
@@ -280,7 +264,6 @@ repair_fix() {
     create_configs "$CARD_ID"
     log "Repair completed on card $CARD_ID"
 
-    check_selinux
 
     whiptail --msgbox "🔧 Repair completed successfully." 8 50
     prompt_reboot
@@ -315,8 +298,6 @@ export_diagnostics() {
         uname -a 2>&1 || true
         echo "--- Distribution ---"
         cat /etc/os-release 2>&1 || true
-        echo "--- SELinux Status ---"
-        getenforce 2>&1 || echo "SELinux not present"
         echo "--- ALSA Cards ---"
         aplay -l 2>&1 || true
         echo "--- Amixer Controls ---"
