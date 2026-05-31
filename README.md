@@ -5,7 +5,7 @@
 >
 > The code was generated with Claude Sonnet 4.6
 > Use at your own risk
-
+> 
 ---
 
 ## ❗ Problems this script fixes
