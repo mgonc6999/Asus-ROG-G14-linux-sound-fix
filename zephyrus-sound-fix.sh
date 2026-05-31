@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Code generated with Claude Sonnet 4.6 - use at your own risk
 
 APP_NAME="ASUS ROG Zephyrus Sound Fix"
 VERSION="1.5.1"
