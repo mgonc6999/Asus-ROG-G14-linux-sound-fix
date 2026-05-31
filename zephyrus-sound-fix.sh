@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 APP_NAME="ASUS ROG Zephyrus Sound Fix"
-VERSION="1.4"
+VERSION="1.5"
 
 MODEL_INFO="Designed for ASUS ROG Zephyrus G14/G16 2024/2025
 
@@ -10,18 +10,20 @@ Fixes low speaker volume by:
 • Forcing AMP1 / AMP2 speaker gain at boot
 • Preventing volume cap after reboot
 • Syncs tweeter and subwoofers
-• Insrease volume by 10db
+• Increase speaker volume by ~10 dB
 "
 
 SERVICE_NAME="alsa-card-volume-cap"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 
-WIREPLUMBER_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
+# WirePlumber 0.5+ (Fedora 44 / modern distros) uses main.conf.d
+WIREPLUMBER_DIR="$HOME/.config/wireplumber/main.conf.d"
 WIREPLUMBER_FILE="$WIREPLUMBER_DIR/99-alsasoftvol.conf"
 
 LOG_FILE="/var/log/zephyrus-sound-fix.log"
 
-SUPPORTED_DISTROS=("ubuntu" "kubuntu" "arch" "cachyos" "debian")
+# Base supported distro IDs — derivatives are matched via ID_LIKE (see is_supported_distro)
+SUPPORTED_DISTROS=("ubuntu" "kubuntu" "arch" "cachyos" "debian" "fedora")
 
 RED="\e[31m"; GREEN="\e[32m"; YELLOW="\e[33m"; BLUE="\e[34m"; RESET="\e[0m"
 
@@ -29,23 +31,65 @@ sudo -v || { echo "Sudo required"; exit 1; }
 
 log() { echo "$(date '+%F %T') | $*" | sudo tee -a "$LOG_FILE" >/dev/null 2>&1; }
 
+# -------- Dependency check --------
+# Ensures whiptail (newt) and alsa-utils are present.
+# Handles dnf5 (Fedora 41+), dnf, apt-get, and pacman.
+check_deps() {
+    local missing=()
+    command -v whiptail >/dev/null || missing+=("newt")
+    command -v amixer   >/dev/null || missing+=("alsa-utils")
+    command -v aplay    >/dev/null || missing+=("alsa-utils")
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "Installing missing dependencies: ${missing[*]}"
+        if command -v dnf5 >/dev/null; then
+            sudo dnf5 install -y "${missing[@]}"
+        elif command -v dnf >/dev/null; then
+            sudo dnf install -y "${missing[@]}"
+        elif command -v apt-get >/dev/null; then
+            sudo apt-get install -y "${missing[@]}"
+        elif command -v pacman >/dev/null; then
+            sudo pacman -S --noconfirm "${missing[@]}"
+        else
+            echo "Cannot auto-install: ${missing[*]}. Please install them manually."
+            exit 1
+        fi
+    fi
+}
+
+check_deps
+
 # -------- Distro detection --------
 detect_distro() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
-        ID="${ID,,}"  # lowercase
-        echo "$ID|$PRETTY_NAME"
+        ID="${ID,,}"
+        ID_LIKE="${ID_LIKE,,}"
+        echo "$ID|${ID_LIKE:-}|$PRETTY_NAME"
     else
-        echo "unknown|Unknown"
+        echo "unknown||Unknown"
     fi
+}
+
+# Returns 0 if the distro ID or any of its ID_LIKE tokens match a supported distro.
+# This covers derivatives: Mint/Pop/Zorin (ubuntu), Manjaro/EndeavourOS (arch),
+# Nobara (fedora), Raspbian (debian), etc.
+is_supported_distro() {
+    local id="$1"
+    local id_like="$2"
+    [[ " ${SUPPORTED_DISTROS[*]} " =~ " $id " ]] && return 0
+    for like in $id_like; do
+        [[ " ${SUPPORTED_DISTROS[*]} " =~ " $like " ]] && return 0
+    done
+    return 1
 }
 
 DISTRO_RAW=$(detect_distro)
 DISTRO="${DISTRO_RAW%%|*}"
+DISTRO_LIKE="${DISTRO_RAW#*|}"; DISTRO_LIKE="${DISTRO_LIKE%|*}"
 DISTRO_PRETTY="${DISTRO_RAW##*|}"
 
-# Friendly text for menu
-if [[ " ${SUPPORTED_DISTROS[*]} " =~ " $DISTRO " ]]; then
+if is_supported_distro "$DISTRO" "$DISTRO_LIKE"; then
     DISTRO_FRIENDLY="$DISTRO_PRETTY (Supported)"
 else
     DISTRO_FRIENDLY="$DISTRO_PRETTY (Not supported – no warranty)"
@@ -77,7 +121,7 @@ detect_cards() {
         else
             hdmi+=("$idx" "$name | AMP1:$amp1 AMP2:$amp2 | HDMI-only")
         fi
-    done < <(aplay -l 2>/dev/null | awk -F'[ :]' '/^card/ {print $2}' | sort -u)
+    done < <(aplay -l 2>/dev/null | awk '/^card [0-9]/ {print $2+0}' | sort -un)
 
     CARD_OPTIONS=("${recommended[@]}" "${partial[@]}" "${hdmi[@]}")
 }
@@ -85,6 +129,7 @@ detect_cards() {
 create_configs() {
     local card="$1"
     mkdir -p "$WIREPLUMBER_DIR"
+    # api.alsa.use-software-mixer is the correct property name in WirePlumber 0.5+
     cat > "$WIREPLUMBER_FILE" <<EOF
 monitor.alsa.rules = [
   {
@@ -93,21 +138,25 @@ monitor.alsa.rules = [
     ]
     actions = {
       update-props = {
-        api.alsa.soft-mixer = true
+        api.alsa.use-software-mixer = true
       }
     }
   }
 ]
 EOF
 
+    # Note: pipewire.service and wireplumber.service are user-session services and
+    # cannot be referenced in After= from a system service. graphical.target is used
+    # instead. ExecStartPre sleep gives the user session time to initialize ALSA.
     sudo tee "$SERVICE_PATH" >/dev/null <<EOF
 [Unit]
 Description=Set max volume on ALSA card $card
-After=sound.target
+After=graphical.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sleep 8
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 5
 ExecStart=/usr/bin/amixer -c $card set Master 100%
 ExecStart=/usr/bin/amixer -c $card set 'AMP1 Speaker' 100%
 ExecStart=/usr/bin/amixer -c $card set 'AMP2 Speaker' 100%
@@ -119,6 +168,22 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
     sudo systemctl restart "$SERVICE_NAME" >/dev/null 2>&1
+}
+
+# Warn Fedora (and other SELinux) users that amixer run from a system service
+# may be silently blocked by SELinux in enforcing mode.
+check_selinux() {
+    if command -v getenforce >/dev/null && [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
+        if command -v whiptail >/dev/null; then
+            whiptail --title "SELinux Notice" --msgbox \
+"SELinux is Enforcing on this system.\n\nIf the volume fix does not persist after reboot, run:\n\n  sudo ausearch -c amixer --raw | audit2allow -M zephyrus-sound\n  sudo semodule -X 300 -i zephyrus-sound.pp\n\nOr temporarily set SELinux to permissive:\n  sudo setenforce 0" \
+18 70
+        else
+            echo "⚠ SELinux is Enforcing. If volume resets after reboot, run:"
+            echo "  sudo ausearch -c amixer --raw | audit2allow -M zephyrus-sound"
+            echo "  sudo semodule -X 300 -i zephyrus-sound.pp"
+        fi
+    fi
 }
 
 show_progress() {
@@ -189,6 +254,8 @@ install_fix() {
     create_configs "$CARD_ID"
     log "Installed on card $CARD_ID"
 
+    check_selinux
+
     whiptail --msgbox "✅ Installation complete." 8 60
     prompt_reboot
 }
@@ -199,7 +266,9 @@ repair_fix() {
         return
     fi
 
-    CARD_ID=$(grep amixer "$SERVICE_PATH" 2>/dev/null | head -1 | awk '{print $4}')
+    # Parse card number from the -c flag rather than relying on field position
+    CARD_ID=$(grep 'amixer -c' "$SERVICE_PATH" 2>/dev/null | head -1 | \
+        awk '{for(i=1;i<=NF;i++) if($i=="-c") {print $(i+1); exit}}')
 
     steps=("Updating WirePlumber config" \
            "Updating systemd service" \
@@ -210,6 +279,8 @@ repair_fix() {
 
     create_configs "$CARD_ID"
     log "Repair completed on card $CARD_ID"
+
+    check_selinux
 
     whiptail --msgbox "🔧 Repair completed successfully." 8 50
     prompt_reboot
@@ -235,7 +306,7 @@ uninstall_fix() {
 }
 
 export_diagnostics() {
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || echo "$HOME")"
     REPORT="$SCRIPT_DIR/zephyrus-sound-diagnostic-$(date +%F-%H%M%S).txt"
     {
         echo "=== Zephyrus Sound Diagnostic Report ==="
@@ -244,6 +315,8 @@ export_diagnostics() {
         uname -a 2>&1 || true
         echo "--- Distribution ---"
         cat /etc/os-release 2>&1 || true
+        echo "--- SELinux Status ---"
+        getenforce 2>&1 || echo "SELinux not present"
         echo "--- ALSA Cards ---"
         aplay -l 2>&1 || true
         echo "--- Amixer Controls ---"
@@ -285,6 +358,7 @@ fallback_mode() {
             3) uninstall_fix ;;
             4) export_diagnostics ;;
             5) exit 0 ;;
+            *) echo "Invalid option." ;;
         esac
     done
 }
@@ -313,5 +387,4 @@ if command -v whiptail >/dev/null; then
     done
 else
     fallback_mode
-
 fi
